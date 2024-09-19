@@ -5,6 +5,7 @@ import { Breakpoint, IBackend, Variable, VariableObject, ValuesFormattingMode, M
 import { MINode } from './backend/mi_parse';
 import { expandValue, isExpandable } from './backend/gdb_expansion';
 import { MI2 } from './backend/mi2/mi2';
+import { execSync } from 'child_process';
 import * as systemPath from "path";
 import * as net from "net";
 import * as os from "os";
@@ -12,15 +13,15 @@ import * as fs from "fs";
 import { SourceFileMap } from "./source_file_map";
 
 class ExtendedVariable {
-	constructor(public name, public options) {
+	constructor(public name: string, public options: { "arg": any }) {
 	}
 }
 
 class VariableScope {
-	constructor (public readonly name: string, public readonly threadId: number, public readonly level: number) {
+	constructor(public readonly name: string, public readonly threadId: number, public readonly level: number) {
 	}
 
-	public static variableName (handle: number, name: string): string {
+	public static variableName(handle: number, name: string): string {
 		return `var_${handle}_${name}`;
 	}
 }
@@ -74,7 +75,7 @@ export class MI2DebugSession extends DebugSession {
 						func = rawCmd.substring(0, spaceIndex);
 						args = JSON.parse(rawCmd.substring(spaceIndex + 1));
 					}
-					Promise.resolve(this.miDebugger[func].apply(this.miDebugger, args)).then(data => {
+					Promise.resolve((this.miDebugger as any)[func].apply(this.miDebugger, args)).then(data => {
 						c.write(data.toString());
 					});
 				});
@@ -89,6 +90,17 @@ export class MI2DebugSession extends DebugSession {
 		} catch (e) {
 			if (process.platform != "win32")
 				this.handleMsg("stderr", "Code-Debug WARNING: Utility Command Server: Failed to start " + e.toString() + "\nCode-Debug WARNING: The examine memory location command won't work");
+		}
+	}
+
+	// verifies that the specified command can be executed
+	protected checkCommand(debuggerName: string): boolean {
+		try {
+			const command = process.platform === 'win32' ? 'where' : 'command -v';
+			execSync(`${command} ${debuggerName}`, { stdio: 'ignore' });
+			return true;
+		} catch (error) {
+			return false;
 		}
 	}
 
@@ -170,7 +182,7 @@ export class MI2DebugSession extends DebugSession {
 		this.quitEvent();
 	}
 
-	protected disconnectRequest(response: DebugProtocol.DisconnectResponse, args: DebugProtocol.DisconnectArguments): void {
+	protected override disconnectRequest(response: DebugProtocol.DisconnectResponse, args: DebugProtocol.DisconnectArguments): void {
 		if (this.attached)
 			this.miDebugger.detach();
 		else
@@ -180,7 +192,7 @@ export class MI2DebugSession extends DebugSession {
 		this.sendResponse(response);
 	}
 
-	protected async setVariableRequest(response: DebugProtocol.SetVariableResponse, args: DebugProtocol.SetVariableArguments): Promise<void> {
+	protected override async setVariableRequest(response: DebugProtocol.SetVariableResponse, args: DebugProtocol.SetVariableArguments): Promise<void> {
 		try {
 			if (this.useVarObjects) {
 				let name = args.name;
@@ -207,16 +219,16 @@ export class MI2DebugSession extends DebugSession {
 		}
 	}
 
-	protected setFunctionBreakPointsRequest(response: DebugProtocol.SetFunctionBreakpointsResponse, args: DebugProtocol.SetFunctionBreakpointsArguments): void {
-		const all = [];
+	protected override setFunctionBreakPointsRequest(response: DebugProtocol.SetFunctionBreakpointsResponse, args: DebugProtocol.SetFunctionBreakpointsArguments): void {
+		const all: Thenable<[boolean, Breakpoint]>[] = [];
 		args.breakpoints.forEach(brk => {
 			all.push(this.miDebugger.addBreakPoint({ raw: brk.name, condition: brk.condition, countCondition: brk.hitCondition }));
 		});
 		Promise.all(all).then(brkpoints => {
-			const finalBrks = [];
+			const finalBrks: DebugProtocol.Breakpoint[] = [];
 			brkpoints.forEach(brkp => {
 				if (brkp[0])
-					finalBrks.push({ line: brkp[1].line });
+					finalBrks.push({ line: brkp[1].line, verified: true });
 			});
 			response.body = {
 				breakpoints: finalBrks
@@ -227,7 +239,7 @@ export class MI2DebugSession extends DebugSession {
 		});
 	}
 
-	protected setBreakPointsRequest(response: DebugProtocol.SetBreakpointsResponse, args: DebugProtocol.SetBreakpointsArguments): void {
+	protected override setBreakPointsRequest(response: DebugProtocol.SetBreakpointsResponse, args: DebugProtocol.SetBreakpointsArguments): void {
 		let path = args.source.path;
 		if (this.isSSH) {
 			// convert local path to ssh path
@@ -235,10 +247,10 @@ export class MI2DebugSession extends DebugSession {
 		}
 		this.miDebugger.clearBreakPoints(path).then(() => {
 			const all = args.breakpoints.map(brk => {
-				return this.miDebugger.addBreakPoint({ file: path, line: brk.line, condition: brk.condition, countCondition: brk.hitCondition });
+				return this.miDebugger.addBreakPoint({ file: path, line: brk.line, condition: brk.condition, countCondition: brk.hitCondition, logMessage: brk.logMessage });
 			});
 			Promise.all(all).then(brkpoints => {
-				const finalBrks = [];
+				const finalBrks: DebugProtocol.Breakpoint[] = [];
 				brkpoints.forEach(brkp => {
 					// TODO: Currently all breakpoints returned are marked as verified,
 					// which leads to verified breakpoints on a broken lldb.
@@ -257,7 +269,7 @@ export class MI2DebugSession extends DebugSession {
 		});
 	}
 
-	protected threadsRequest(response: DebugProtocol.ThreadsResponse): void {
+	protected override threadsRequest(response: DebugProtocol.ThreadsResponse): void {
 		if (!this.miDebugger) {
 			this.sendResponse(response);
 			return;
@@ -271,7 +283,11 @@ export class MI2DebugSession extends DebugSession {
 				response.body.threads.push(new Thread(thread.id, thread.id + ":" + threadName));
 			}
 			this.sendResponse(response);
-		}).catch(error => {
+		}).catch((error: MIError) => {
+			if (error.message === 'Selected thread is running.') {
+				this.sendResponse(response);
+				return;
+			}
 			this.sendErrorResponse(response, 17, `Could not get threads: ${error}`);
 		});
 	}
@@ -284,7 +300,7 @@ export class MI2DebugSession extends DebugSession {
 		return [frameId & 0xffff, frameId >> 16];
 	}
 
-	protected stackTraceRequest(response: DebugProtocol.StackTraceResponse, args: DebugProtocol.StackTraceArguments): void {
+	protected override stackTraceRequest(response: DebugProtocol.StackTraceResponse, args: DebugProtocol.StackTraceArguments): void {
 		this.miDebugger.getStack(args.startFrame, args.levels, args.threadId).then(stack => {
 			const ret: StackFrame[] = [];
 			stack.forEach(element => {
@@ -304,7 +320,7 @@ export class MI2DebugSession extends DebugSession {
 
 				ret.push(new StackFrame(
 					this.threadAndLevelToFrameId(args.threadId, element.level),
-					element.function + "@" + element.address,
+					element.function + (element.address ? "@" + element.address : ""),
 					source,
 					element.line,
 					0));
@@ -318,7 +334,7 @@ export class MI2DebugSession extends DebugSession {
 		});
 	}
 
-	protected configurationDoneRequest(response: DebugProtocol.ConfigurationDoneResponse, args: DebugProtocol.ConfigurationDoneArguments): void {
+	protected override configurationDoneRequest(response: DebugProtocol.ConfigurationDoneResponse, args: DebugProtocol.ConfigurationDoneArguments): void {
 		const promises: Thenable<any>[] = [];
 		let entryPoint: string | undefined = undefined;
 		let runToStart: boolean = false;
@@ -387,7 +403,7 @@ export class MI2DebugSession extends DebugSession {
 		});
 	}
 
-	protected scopesRequest(response: DebugProtocol.ScopesResponse, args: DebugProtocol.ScopesArguments): void {
+	protected override scopesRequest(response: DebugProtocol.ScopesResponse, args: DebugProtocol.ScopesArguments): void {
 		const scopes = new Array<Scope>();
 		const [threadId, level] = this.frameIdToThreadAndLevel(args.frameId);
 
@@ -405,7 +421,8 @@ export class MI2DebugSession extends DebugSession {
 			return new Scope(scopeName, handle, expensive);
 		};
 
-		scopes.push(createScope("Local", false));
+		scopes.push(createScope("Locals", false));
+		scopes.push(createScope("Registers", false));
 
 		response.body = {
 			scopes: scopes
@@ -413,13 +430,13 @@ export class MI2DebugSession extends DebugSession {
 		this.sendResponse(response);
 	}
 
-	protected async variablesRequest(response: DebugProtocol.VariablesResponse, args: DebugProtocol.VariablesArguments): Promise<void> {
+	protected override async variablesRequest(response: DebugProtocol.VariablesResponse, args: DebugProtocol.VariablesArguments): Promise<void> {
 		const variables: DebugProtocol.Variable[] = [];
 		const id: VariableScope | string | VariableObject | ExtendedVariable = this.variableHandles.get(args.variablesReference);
 
-		const createVariable = (arg, options?) => {
+		const createVariable = (arg: string | VariableObject, options?: any) => {
 			if (options)
-				return this.variableHandles.create(new ExtendedVariable(arg, options));
+				return this.variableHandles.create(new ExtendedVariable(typeof arg === 'string' ? arg : arg.name, options));
 			else
 				return this.variableHandles.create(arg);
 		};
@@ -436,64 +453,74 @@ export class MI2DebugSession extends DebugSession {
 		};
 
 		if (id instanceof VariableScope) {
-			let stack: Variable[];
 			try {
-				stack = await this.miDebugger.getStackVariables(id.threadId, id.level);
-				for (const variable of stack) {
-					if (this.useVarObjects) {
-						try {
-							const varObjName = VariableScope.variableName(args.variablesReference, variable.name);
-							let varObj: VariableObject;
+				if (id.name == "Registers") {
+					const registers = await this.miDebugger.getRegisters();
+					for (const reg of registers) {
+						variables.push({
+							name: reg.name,
+							value: reg.valueStr,
+							variablesReference: 0
+						});
+					}
+				} else {
+					const stack: Variable[] = await this.miDebugger.getStackVariables(id.threadId, id.level);
+					for (const variable of stack) {
+						if (this.useVarObjects) {
 							try {
-								const changes = await this.miDebugger.varUpdate(varObjName);
-								const changelist = changes.result("changelist");
-								changelist.forEach((change) => {
-									const name = MINode.valueOf(change, "name");
-									const vId = this.variableHandlesReverse[name];
-									const v = this.variableHandles.get(vId) as any;
-									v.applyChanges(change);
-								});
-								const varId = this.variableHandlesReverse[varObjName];
-								varObj = this.variableHandles.get(varId) as any;
-							} catch (err) {
-								if (err instanceof MIError && err.message == "Variable object not found") {
-									varObj = await this.miDebugger.varCreate(variable.name, varObjName);
-									const varId = findOrCreateVariable(varObj);
-									varObj.exp = variable.name;
-									varObj.id = varId;
-								} else {
-									throw err;
+								const varObjName = VariableScope.variableName(args.variablesReference, variable.name);
+								let varObj: VariableObject;
+								try {
+									const changes = await this.miDebugger.varUpdate(varObjName);
+									const changelist = changes.result("changelist");
+									changelist.forEach((change: any) => {
+										const name = MINode.valueOf(change, "name");
+										const vId = this.variableHandlesReverse[name];
+										const v = this.variableHandles.get(vId) as any;
+										v.applyChanges(change);
+									});
+									const varId = this.variableHandlesReverse[varObjName];
+									varObj = this.variableHandles.get(varId) as any;
+								} catch (err) {
+									if (err instanceof MIError && (err.message == "Variable object not found" || err.message.endsWith("does not exist"))) {
+										varObj = await this.miDebugger.varCreate(id.threadId, id.level, variable.name, varObjName);
+										const varId = findOrCreateVariable(varObj);
+										varObj.exp = variable.name;
+										varObj.id = varId;
+									} else {
+										throw err;
+									}
 								}
+								variables.push(varObj.toProtocolVariable());
+							} catch (err) {
+								variables.push({
+									name: variable.name,
+									value: `<${err}>`,
+									variablesReference: 0
+								});
 							}
-							variables.push(varObj.toProtocolVariable());
-						} catch (err) {
-							variables.push({
-								name: variable.name,
-								value: `<${err}>`,
-								variablesReference: 0
-							});
+						} else {
+							if (variable.valueStr !== undefined) {
+								let expanded = expandValue(createVariable, `{${variable.name}=${variable.valueStr})`, "", variable.raw);
+								if (expanded) {
+									if (typeof expanded[0] == "string")
+										expanded = [
+											{
+												name: "<value>",
+												value: prettyStringArray(expanded),
+												variablesReference: 0
+											}
+										];
+									variables.push(expanded[0]);
+								}
+							} else
+								variables.push({
+									name: variable.name,
+									type: variable.type,
+									value: variable.type,
+									variablesReference: createVariable(variable.name)
+								});
 						}
-					} else {
-						if (variable.valueStr !== undefined) {
-							let expanded = expandValue(createVariable, `{${variable.name}=${variable.valueStr})`, "", variable.raw);
-							if (expanded) {
-								if (typeof expanded[0] == "string")
-									expanded = [
-										{
-											name: "<value>",
-											value: prettyStringArray(expanded),
-											variablesReference: 0
-										}
-									];
-								variables.push(expanded[0]);
-							}
-						} else
-							variables.push({
-								name: variable.name,
-								type: variable.type,
-								value: "<unknown>",
-								variablesReference: createVariable(variable.name)
-							});
 					}
 				}
 				response.body = {
@@ -510,7 +537,14 @@ export class MI2DebugSession extends DebugSession {
 				// TODO: this evaluates on an (effectively) unknown thread for multithreaded programs.
 				variable = await this.miDebugger.evalExpression(JSON.stringify(id), 0, 0);
 				try {
-					let expanded = expandValue(createVariable, variable.result("value"), id, variable);
+					let variableValue = variable.result("value");
+					const pattern = /'([^']*)' <repeats (\d+) times>/g;
+					variableValue = variableValue.replace(pattern, (_: any, char: string, count: string) => {
+						const repeatCount = parseInt(count, 10) + 1;
+						const repeatedArray = Array(repeatCount).fill(char);
+						return `{${repeatedArray.map(item => `'${item}'`).join(', ')}}`;
+					});
+					let expanded = expandValue(createVariable, variableValue, id, variable);
 					if (!expanded) {
 						this.sendErrorResponse(response, 2, `Could not expand variable`);
 					} else {
@@ -555,7 +589,7 @@ export class MI2DebugSession extends DebugSession {
 			} else if (id instanceof ExtendedVariable) {
 				const varReq = id;
 				if (varReq.options.arg) {
-					const strArr = [];
+					const strArr: DebugProtocol.Variable[] = [];
 					let argsPart = true;
 					let arrIndex = 0;
 					const submit = () => {
@@ -622,7 +656,7 @@ export class MI2DebugSession extends DebugSession {
 		}
 	}
 
-	protected pauseRequest(response: DebugProtocol.ContinueResponse, args: DebugProtocol.ContinueArguments): void {
+	protected override pauseRequest(response: DebugProtocol.ContinueResponse, args: DebugProtocol.ContinueArguments): void {
 		this.miDebugger.interrupt().then(done => {
 			this.sendResponse(response);
 		}, msg => {
@@ -630,7 +664,7 @@ export class MI2DebugSession extends DebugSession {
 		});
 	}
 
-	protected reverseContinueRequest(response: DebugProtocol.ReverseContinueResponse, args: DebugProtocol.ReverseContinueArguments): void {
+	protected override reverseContinueRequest(response: DebugProtocol.ReverseContinueResponse, args: DebugProtocol.ReverseContinueArguments): void {
 		this.miDebugger.continue(true).then(done => {
 			this.sendResponse(response);
 		}, msg => {
@@ -638,7 +672,7 @@ export class MI2DebugSession extends DebugSession {
 		});
 	}
 
-	protected continueRequest(response: DebugProtocol.ContinueResponse, args: DebugProtocol.ContinueArguments): void {
+	protected override continueRequest(response: DebugProtocol.ContinueResponse, args: DebugProtocol.ContinueArguments): void {
 		this.miDebugger.continue().then(done => {
 			this.sendResponse(response);
 		}, msg => {
@@ -646,7 +680,7 @@ export class MI2DebugSession extends DebugSession {
 		});
 	}
 
-	protected stepBackRequest(response: DebugProtocol.StepBackResponse, args: DebugProtocol.StepBackArguments): void {
+	protected override stepBackRequest(response: DebugProtocol.StepBackResponse, args: DebugProtocol.StepBackArguments): void {
 		this.miDebugger.step(true).then(done => {
 			this.sendResponse(response);
 		}, msg => {
@@ -654,7 +688,7 @@ export class MI2DebugSession extends DebugSession {
 		});
 	}
 
-	protected stepInRequest(response: DebugProtocol.NextResponse, args: DebugProtocol.NextArguments): void {
+	protected override stepInRequest(response: DebugProtocol.NextResponse, args: DebugProtocol.NextArguments): void {
 		this.miDebugger.step().then(done => {
 			this.sendResponse(response);
 		}, msg => {
@@ -662,7 +696,7 @@ export class MI2DebugSession extends DebugSession {
 		});
 	}
 
-	protected stepOutRequest(response: DebugProtocol.NextResponse, args: DebugProtocol.NextArguments): void {
+	protected override stepOutRequest(response: DebugProtocol.NextResponse, args: DebugProtocol.NextArguments): void {
 		this.miDebugger.stepOut().then(done => {
 			this.sendResponse(response);
 		}, msg => {
@@ -670,7 +704,7 @@ export class MI2DebugSession extends DebugSession {
 		});
 	}
 
-	protected nextRequest(response: DebugProtocol.NextResponse, args: DebugProtocol.NextArguments): void {
+	protected override nextRequest(response: DebugProtocol.NextResponse, args: DebugProtocol.NextArguments): void {
 		this.miDebugger.next().then(done => {
 			this.sendResponse(response);
 		}, msg => {
@@ -678,7 +712,7 @@ export class MI2DebugSession extends DebugSession {
 		});
 	}
 
-	protected evaluateRequest(response: DebugProtocol.EvaluateResponse, args: DebugProtocol.EvaluateArguments): void {
+	protected override evaluateRequest(response: DebugProtocol.EvaluateResponse, args: DebugProtocol.EvaluateArguments): void {
 		const [threadId, level] = this.frameIdToThreadAndLevel(args.frameId);
 		if (args.context == "watch" || args.context == "hover") {
 			this.miDebugger.evalExpression(args.expression, threadId, level).then((res) => {
@@ -688,7 +722,12 @@ export class MI2DebugSession extends DebugSession {
 				};
 				this.sendResponse(response);
 			}, msg => {
-				this.sendErrorResponse(response, 7, msg.toString());
+				if (args.context == "hover") {
+					// suppress error for hover as the user may just play with the mouse
+					this.sendResponse(response);
+				} else {
+					this.sendErrorResponse(response, 7, msg.toString());
+				}
 			});
 		} else {
 			this.miDebugger.sendUserInput(args.expression, threadId, level).then(output => {
@@ -709,7 +748,7 @@ export class MI2DebugSession extends DebugSession {
 		}
 	}
 
-	protected gotoTargetsRequest(response: DebugProtocol.GotoTargetsResponse, args: DebugProtocol.GotoTargetsArguments): void {
+	protected override gotoTargetsRequest(response: DebugProtocol.GotoTargetsResponse, args: DebugProtocol.GotoTargetsArguments): void {
 		const path: string = this.isSSH ? this.sourceFileMap.toRemotePath(args.source.path) : args.source.path;
 		this.miDebugger.goto(path, args.line).then(done => {
 			response.body = {
@@ -717,7 +756,7 @@ export class MI2DebugSession extends DebugSession {
 					id: 1,
 					label: args.source.name,
 					column: args.column,
-					line : args.line
+					line: args.line
 				}]
 			};
 			this.sendResponse(response);
@@ -726,21 +765,21 @@ export class MI2DebugSession extends DebugSession {
 		});
 	}
 
-	protected gotoRequest(response: DebugProtocol.GotoResponse, args: DebugProtocol.GotoArguments): void {
+	protected override gotoRequest(response: DebugProtocol.GotoResponse, args: DebugProtocol.GotoArguments): void {
 		this.sendResponse(response);
 	}
 
 	protected setSourceFileMap(configMap: { [index: string]: string }, fallbackGDB: string, fallbackIDE: string): void {
 		if (configMap === undefined) {
-			this.sourceFileMap = new SourceFileMap({[fallbackGDB]: fallbackIDE});
+			this.sourceFileMap = new SourceFileMap({ [fallbackGDB]: fallbackIDE });
 		} else {
-			this.sourceFileMap = new SourceFileMap(configMap);
+			this.sourceFileMap = new SourceFileMap(configMap, fallbackGDB);
 		}
 	}
 
 }
 
-function prettyStringArray(strings) {
+function prettyStringArray(strings: any) {
 	if (typeof strings == "object") {
 		if (strings.length !== undefined)
 			return strings.join(", ");

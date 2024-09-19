@@ -10,7 +10,7 @@
 		"debug"
 	],
 	"license": "public domain",
-	"version": "0.26.0",
+	"version": "0.27.1",
 	"publisher": "webfreak",
 	"icon": "images/icon.png",
 	"engines": {
@@ -101,6 +101,9 @@
 			},
 			{
 				"language": "zig"
+			},
+			{
+				"language": "riscv"
 			}
 		],
 		"debuggers": [
@@ -129,7 +132,8 @@
 					"vala",
 					"crystal",
 					"kotlin",
-					"zig"
+					"zig",
+					"riscv"
 				],
 				"variables": {
 					"FileBasenameNoExt": "code-debug.getFileBasenameNoExt",
@@ -183,12 +187,17 @@
 							"valuesFormatting": {
 								"type": "string",
 								"description": "Set the way of showing variable values. 'disabled' - show value as is, 'parseText' - parse debuggers output text into structure, 'prettyPrinters' - enable debuggers custom pretty-printers if there are any",
-								"default": "parseText",
+								"default": "prettyPrinters",
 								"enum": [
 									"disabled",
 									"parseText",
 									"prettyPrinters"
 								]
+							},
+							"frameFilters": {
+								"type": "boolean",
+								"description": "Use frame filters registered in GDB",
+								"default": true
 							},
 							"printCalls": {
 								"type": "boolean",
@@ -290,6 +299,11 @@
 										"description": "Content will be executed on the SSH host before the debugger call."
 									}
 								}
+							},
+							"registerLimit": {
+								"type": "string",
+								"description": "List of numbers specifying the registers to display. An empty string indicates that the contents of all the registers must be returned.",
+								"default": ""
 							}
 						}
 					},
@@ -317,6 +331,11 @@
 									"parseText",
 									"prettyPrinters"
 								]
+							},
+							"frameFilters": {
+								"type": "boolean",
+								"description": "Use frame filters registered in GDB",
+								"default": true
 							},
 							"printCalls": {
 								"type": "boolean",
@@ -454,6 +473,11 @@
 										"description": "Content will be executed on the SSH host before the debugger call."
 									}
 								}
+							},
+							"registerLimit": {
+								"type": "string",
+								"description": "List of numbers specifying the registers to display. An empty string indicates that the contents of all the registers must be returned.",
+								"default": ""
 							}
 						}
 					}
@@ -595,7 +619,8 @@
 					"vala",
 					"crystal",
 					"kotlin",
-					"zig"
+					"zig",
+					"riscv"
 				],
 				"variables": {
 					"FileBasenameNoExt": "code-debug.getFileBasenameNoExt",
@@ -751,6 +776,11 @@
 										"description": "Content will be executed on the SSH host before the debugger call."
 									}
 								}
+							},
+							"registerLimit": {
+								"type": "string",
+								"description": "List of numbers specifying the registers to display. An empty string indicates that the contents of all the registers must be returned.",
+								"default": ""
 							}
 						}
 					},
@@ -831,6 +861,11 @@
 								],
 								"description": "Whether debugger should stop at application entry point",
 								"default": false
+							},
+							"registerLimit": {
+								"type": "string",
+								"description": "List of numbers specifying the registers to display. An empty string indicates that the contents of all the registers must be returned.",
+								"default": ""
 							}
 						}
 					}
@@ -977,6 +1012,11 @@
 								"type": "array",
 								"description": "mago commands to run when starting to debug",
 								"default": []
+							},
+							"registerLimit": {
+								"type": "string",
+								"description": "List of numbers specifying the registers to display. An empty string indicates that the contents of all the registers must be returned.",
+								"default": ""
 							}
 						}
 					},
@@ -1042,6 +1082,11 @@
 								"type": "boolean",
 								"description": "Whether debugger should stop after connecting to target",
 								"default": false
+							},
+							"registerLimit": {
+								"type": "string",
+								"description": "List of numbers specifying the registers to display. An empty string indicates that the contents of all the registers must be returned.",
+								"default": ""
 							}
 						}
 					}
@@ -1094,6 +1139,7 @@
 		"lint-and-fix": "eslint . --ext .ts --fix --format compact",
 		"spellcheck-docs": "cspell lint **/*.md",
 		"lint-docs": "markdownlint **/*.md",
+		"link-check": "markdown-link-check *.md",
 		"prettier-write-docs": "prettier --write **/*.md",
 		"prettier-check-docs": "prettier --check **/*.md"
 	},
@@ -1106,6 +1152,7 @@
 		"@istanbuljs/nyc-config-typescript": "^1.0.2",
 		"@types/mocha": "^5.2.6",
 		"@types/node": "^11.11.3",
+		"@types/ssh2": "^1.15.0",
 		"@types/vscode": "^1.55.0",
 		"@typescript-eslint/eslint-plugin": "^5.22.0",
 		"@typescript-eslint/parser": "^5.22.0",
@@ -1113,12 +1160,13 @@
 		"eslint": "^8.14.0",
 		"eslint-plugin-deprecation": "^1.3.2",
 		"eslint-plugin-no-null": "^1.0.2",
+		"markdown-link-check": "^3.10.3",
 		"markdownlint-cli": "^0.31.1",
 		"mocha": "^9.1.3",
 		"nyc": "^15.1.0",
 		"prettier": "^2.6.2",
 		"ts-node": "^10.8.0",
-		"typescript": "^3.9.3"
+		"typescript": "^4.3.2"
 	},
 	"__metadata": {
 		"id": "2fd22b8e-b3b8-4e7f-9a28-a5e2d1bdd0d4",

@@ -15,6 +15,7 @@ export interface LaunchRequestArguments extends DebugProtocol.LaunchRequestArgum
 	valuesFormatting: ValuesFormattingMode;
 	printCalls: boolean;
 	showDevDebugOutput: boolean;
+	registerLimit: string;
 }
 
 export interface AttachRequestArguments extends DebugProtocol.AttachRequestArguments {
@@ -29,6 +30,7 @@ export interface AttachRequestArguments extends DebugProtocol.AttachRequestArgum
 	valuesFormatting: ValuesFormattingMode;
 	printCalls: boolean;
 	showDevDebugOutput: boolean;
+	registerLimit: string;
 }
 
 class MagoDebugSession extends MI2DebugSession {
@@ -36,7 +38,7 @@ class MagoDebugSession extends MI2DebugSession {
 		super(debuggerLinesStartAt1, isServer);
 	}
 
-	protected initializeRequest(response: DebugProtocol.InitializeResponse, args: DebugProtocol.InitializeRequestArguments): void {
+	protected override initializeRequest(response: DebugProtocol.InitializeResponse, args: DebugProtocol.InitializeRequestArguments): void {
 		response.body.supportsHitConditionalBreakpoints = true;
 		response.body.supportsConfigurationDoneRequest = true;
 		response.body.supportsConditionalBreakpoints = true;
@@ -49,8 +51,13 @@ class MagoDebugSession extends MI2DebugSession {
 		return 0;
 	}
 
-	protected launchRequest(response: DebugProtocol.LaunchResponse, args: LaunchRequestArguments): void {
-		this.miDebugger = new MI2_Mago(args.magomipath || "mago-mi", ["-q"], args.debugger_args, args.env);
+	protected override launchRequest(response: DebugProtocol.LaunchResponse, args: LaunchRequestArguments): void {
+		const dbgCommand = args.magomipath || "mago-mi";
+		if (!this.checkCommand(dbgCommand)) {
+			this.sendErrorResponse(response, 104, `Configured debugger ${dbgCommand} not found.`);
+			return;
+		}
+		this.miDebugger = new MI2_Mago(dbgCommand, ["-q"], args.debugger_args, args.env);
 		this.initDebugger();
 		this.quit = false;
 		this.attached = false;
@@ -61,17 +68,21 @@ class MagoDebugSession extends MI2DebugSession {
 		this.setValuesFormattingMode(args.valuesFormatting);
 		this.miDebugger.printCalls = !!args.printCalls;
 		this.miDebugger.debugOutput = !!args.showDevDebugOutput;
-		this.miDebugger.load(args.cwd, args.target, args.arguments, undefined).then(() => {
-			if (args.autorun)
-				args.autorun.forEach(command => {
-					this.miDebugger.sendUserInput(command);
-				});
+		this.miDebugger.registerLimit = args.registerLimit ?? "";
+		this.miDebugger.load(args.cwd, args.target, args.arguments, undefined, args.autorun || []).then(() => {
 			this.sendResponse(response);
+		}, err => {
+			this.sendErrorResponse(response, 109, `Failed to load MI Debugger: ${err.toString()}`);
 		});
 	}
 
-	protected attachRequest(response: DebugProtocol.AttachResponse, args: AttachRequestArguments): void {
-		this.miDebugger = new MI2_Mago(args.magomipath || "mago-mi", [], args.debugger_args, args.env);
+	protected override attachRequest(response: DebugProtocol.AttachResponse, args: AttachRequestArguments): void {
+		const dbgCommand = args.magomipath || "mago-mi";
+		if (!this.checkCommand(dbgCommand)) {
+			this.sendErrorResponse(response, 104, `Configured debugger ${dbgCommand} not found.`);
+			return;
+		}
+		this.miDebugger = new MI2_Mago(dbgCommand, ["-q"], args.debugger_args, args.env);
 		this.initDebugger();
 		this.quit = false;
 		this.attached = true;
@@ -80,12 +91,11 @@ class MagoDebugSession extends MI2DebugSession {
 		this.setValuesFormattingMode(args.valuesFormatting);
 		this.miDebugger.printCalls = !!args.printCalls;
 		this.miDebugger.debugOutput = !!args.showDevDebugOutput;
-		this.miDebugger.attach(args.cwd, args.executable, args.target).then(() => {
-			if (args.autorun)
-				args.autorun.forEach(command => {
-					this.miDebugger.sendUserInput(command);
-				});
+		this.miDebugger.registerLimit = args.registerLimit ?? "";
+		this.miDebugger.attach(args.cwd, args.executable, args.target, args.autorun || []).then(() => {
 			this.sendResponse(response);
+		}, err => {
+			this.sendErrorResponse(response, 110, `Failed to attach: ${err.toString()}`);
 		});
 	}
 }
